@@ -1,0 +1,165 @@
+## Debian Repository -
+--> /etc/apt/sources.list
+====>
+deb http://ftp.us.debian.org/debian squeeze main contrib non-free
+deb-src http://ftp.us.debian.org/debian squeeze main contrib non-free
+
+deb http://security.debian.org/ squeeze/updates main
+deb-src http://security.debian.org/ squeeze/updates main
+
+deb http://ftp.us.debian.org/debian squeeze-updates main contrib non-free
+deb-src http://ftp.us.debian.org/debian squeeze-updates main contrib non-free
+
+# backports 
+deb http://backports.debian.org/debian-backports squeeze-backports main
+deb-src http://backports.debian.org/debian-backports squeeze-backports main
+<===
+
+## Upgrading the system.
+-->apt-get update
+-->apt-get upgrade
+
+## installing the useful libraries
+-->apt-get install g++ curl libssl-dev apache2-utils git-core
+
+## install other graphite dependencies
+-->apt-get install build-essential python2.6-dev python-cairo python-django memcached python-memcache python-ldap python-twisted apache2 libapache2-mod-python make python-django-tagging python-twisted python-dev python-pip libcairo2 libcairo2-dev python-cairo pkg-config sqlite
+
+## Downloading the source node and compiling and installing 
+-->wget https://github.com/joyent/node/zipball/v0.6.18 && unzip v0.6.18
+-->cd node
+-->./configure
+-->make
+-->make install
+
+## installing the Node package manager for statsd
+-->curl http://npmjs.org/install.sh | sudo sh
+-->npm install express
+
+## Downloading and installing the graphite+carbon+whisper
+-->mkdir packages && cd packages
+-->wget  --no-check-certificate http://launchpad.net/graphite/0.9/0.9.9/+download/graphite-web-0.9.9.tar.gz
+-->wget  --no-check-certificate http://launchpad.net/graphite/0.9/0.9.9/+download/carbon-0.9.9.tar.gz
+-->wget  --no-check-certificate http://launchpad.net/graphite/0.9/0.9.9/+download/whisper-0.9.9.tar.gz
+tar -zxvf graphite-web-0.9.9.tar.gz && tar -zxvf carbon-0.9.9.tar.gz && tar -zxvf whisper-0.9.9.tar.gz && mv graphite-web-0.9.9 graphite && mv carbon-0.9.9 carbon && mv whisper-0.9.9 whisper
+
+## INSTALL WHISPER
+-->pushd whisper
+-->python setup.py install
+-->popd
+ 
+## INSTALL CARBON
+-->pushd carbon
+-->python setup.py install
+-->popd
+
+## CONFIGURE CARBON
+-->pushd /opt/graphite/conf
+-->cp carbon.conf.example carbon.conf
+-->cp storage-schemas.conf.example storage-schemas.conf
+-->vim storage-schemas.conf
+ 
+### (NOT SHELL!) edited storage-schemas.conf to be the following
+[stats]
+priority = 110
+pattern = .*
+retentions = 10:2160,60:10080,600:262974
+###
+
+-->popd
+
+## CONFIGURE GRAPHITE (webapp)
+-->apt-get install python-dev
+-->easy_install twisted txamqp
+-->pushd graphite
+-->python check-dependencies.py
+-->python setup.py install
+
+## disabling python_mod and enabling wsgi mod
+-->a2dismod python && /etc/init.d/apache2 restart
+-->cd/opt/packages/graphite/examples
+-->apt-get install libapache2-mod-wsgi
+-->a2enmod modwsgi
+
+## CONFIGURE APACHE
+-->cp example-graphite-vhost.conf /etc/apache2/sites-available/default
+-->cp /opt/graphite/conf/graphite.wsgi.example /opt/graphite/conf/graphite.wsgi
+-->vim /etc/apache2/sites-available/default
+# moved 'WSGIImportScript /opt/graphite/' to right before virtual host since it gave me an error saying
+# WSGIImportScript cannot occur within <VirtualHost> section
+# if this path does not exist make it!!!!!!
+# /etc/httpd/wsgi
+-->mkdir -p /etc/httpd/wsgi
+-->/etc/init.d/apache2 reload
+
+## INITIAL DATABASE CREATION
+-->pushd /opt/graphite/webapp/graphite/
+-->python manage.py syncdb
+## follow prompts to setup django admin user
+-->chown -R www-data:www-data /opt/graphite/storage/
+-->/etc/init.d/apache2 restart
+-->popd
+-->/opt/graphite/webapp/graphite
+-->cp local_settings.py.example local_settings.py
+
+## START CARBON
+-->popd
+-->pushd /opt/graphite/
+-->./bin/carbon-cache.py start
+-->popd
+
+## clone the statsd project
+-->cd /opt/graphite
+-->git clone https://github.com/etsy/statsd.git
+-->cp exampleConfig.js local.js
+-->vim local.js
+===>
+{
+  graphitePort: 2003
+, graphiteHost: "localhost"
+, port: 8125
+}
+===>
+
+## Start STATSD
+-->cd /opt/graphite/statsd/; nohup node stats.js local.js &
+
+===>>> Tweeks -
+1) The Flot graph stuff won’t work with Python 2.6+ without a change to 
+ /opt/graphite/webapp/graphite/graphlot/views.py and changing line 6 from:
+import simplejson
+to
+import json as simplejson
+
+2) INIT Script 
+-->vim /etc/init.d/carbon
+===>
+#! /bin/sh
+# /etc/init.d/carbon
+
+# Some things that run always
+touch /var/lock/carbon
+
+GRAPHITE_HOME=/opt/graphite
+CARBON_USER=www-data
+
+# Carry out specific functions when asked to by the system
+case "$1" in
+    start)
+        echo "Starting script carbon "
+        su $CARBON_USER -c "cd $GRAPHITE_HOME"; su $CARBON_USR -c "$GRAPHITE_HOME/bin/carbon-cache.py start"
+        ;;
+    stop)
+        echo "Stopping script carbon"
+        su $CARBON_USER -c "cd $GRAPHITE_HOME"; su $CARBON_USR -c "$GRAPHITE_HOME/bin/carbon-cache.py stop"
+        ;;
+    *)
+        echo "Usage: /etc/init.d/carbon {start|stop}"
+        exit 1
+        ;;
+esac
+
+exit 0
+<===
+-->chmod u+x /etc/init.d/carbon
+-->update-rc.d carbon defaults
